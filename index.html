@@ -1,215 +1,86 @@
 <!doctype html>
 <html lang="vi">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Giải mã Link rút gọn (unique, streaming) & Gộp Excel theo “Lượt bán”</title>
-<style>
-  :root{--bg:#0b1020;--card:#121830;--muted:#8fa1c8;--txt:#e9eefb;--line:#1b2340}
-  *{box-sizing:border-box}
-  body{font:14px/1.55 system-ui,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--txt);margin:0}
-  .wrap{max-width:1100px;margin:22px auto;padding:0 16px}
-  h1{margin:0 0 8px;font-size:20px} h2{margin:0 0 8px;font-size:18px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin:16px 0}
-  textarea,input[type=file]{width:100%;margin:6px 0;padding:10px;border-radius:8px;border:1px solid #223;background:#0d1330;color:var(--txt)}
-  button{margin:6px 4px;padding:10px 14px;border-radius:8px;border:1px solid #235;background:#1b2550;color:#fff;cursor:pointer}
-  button.secondary{background:#2a355f}
-  button:disabled{opacity:.55;cursor:not-allowed}
-  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
-  .note{color:var(--muted);font-size:13px}
-  .pill{display:inline-flex;align-items:center;gap:8px;margin:2px;padding:4px 10px;background:#0e1a42;border:1px solid #223;border-radius:999px;font-size:12px;color:#a8b4d6}
-  .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
-  .list{min-height:160px}
-  .counts span{display:inline-block;margin:2px 6px 0 0;padding:4px 8px;border:1px solid #223;border-radius:999px;background:#0e1a42;color:#a8b4d6;font-size:12px}
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Gộp nhiều Excel → Xuất 4 file theo nhóm "Lượt bán"</title>
+  <style>
+    :root{--bg:#0b1020;--card:#121830;--muted:#7c8db5;--txt:#e9eefb;--line:#1b2340}
+    body{font:14px/1.5 system-ui,Roboto,Arial;background:var(--bg);color:var(--txt);margin:0}
+    .wrap{max-width:1100px;margin:22px auto;padding:0 16px}
+    h1{margin:0 0 8px}
+    .card{background:#121830;border:1px solid var(--line);border-radius:12px;padding:16px;margin:16px 0}
+    input[type=file]{width:100%;margin:6px 0;padding:10px;border-radius:8px;border:1px solid #223;background:#0d1330;color:var(--txt)}
+    button{margin:6px 4px;padding:10px 14px;border-radius:8px;border:1px solid #235;background:#1b2550;color:#fff;cursor:pointer}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .pill{display:inline-block;margin:2px;padding:4px 10px;background:#0e1a42;border:1px solid #223;border-radius:999px;font-size:12px;color:#a8b4d6}
+    .note{color:var(--muted);font-size:13px}
+    #bucketCounts .pill{margin-right:6px}
+  </style>
 
-<!-- Tự nạp SheetJS từ nhiều CDN (không cố định version) -->
+  <!-- (Tuỳ chọn) DÁN NỘI DUNG xlsx.full.min.js vào đây để chạy OFFLINE 100% -->
+  <script id="SHEETJS_INLINE" type="text/plain">
+/* === SHEETJS_INLINE_START ===
+   DÁN TOÀN BỘ NỘI DUNG xlsx.full.min.js VÀO ĐÂY NẾU MUỐN "1 FILE HOÀN TOÀN" (OFFLINE).
+   Nếu để trống, loader bên dưới sẽ tự tải từ nhiều CDN (không cố định version).
+=== SHEETJS_INLINE_END === */
+  </script>
+</head>
+<body>
+<div class="wrap">
+  <h1>📊 Gộp nhiều Excel → Xuất 4 file theo nhóm “Lượt bán”</h1>
+
+  <section class="card">
+    <p class="note">Cấu trúc cột A: các tiêu đề theo thứ tự “Lượt bán &gt; X”, “Lượt bán X - Y”, “Lượt bán Y - Z”, “Lượt bán &lt; Z”; dưới mỗi tiêu đề là danh sách link (có thể có dòng trống). Công cụ tự nhận diện X, Y, Z.</p>
+    <div>
+      <input type="file" id="excelFiles" accept=".xls,.xlsx,.csv" multiple>
+      <label class="pill"><input id="stripParams2" type="checkbox" checked> Chuẩn hoá URL khi trùng (bỏ query/hash)</label>
+    </div>
+    <button id="btnProcess">Xử lý & Xuất 4 file</button>
+    <div id="fileList"></div>
+    <div id="mergeStatus" class="note"></div>
+    <div id="bucketCounts"></div>
+  </section>
+</div>
+
 <script>
-(async function loadXLSX(){
+/* ================== SheetJS bootstrap (inline hoặc CDN không cố định version) ================== */
+(async function bootstrapXLSX(){
   if (window.XLSX) return;
-  const cdns = [
+  const inline = document.getElementById('SHEETJS_INLINE')?.textContent || '';
+  if (inline && /xlsx\.(?:version|utils|read)/.test(inline)) { (0, eval)(inline); return; }
+  const cdnList = [
     "https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js",
     "https://fastly.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js",
     "https://unpkg.com/xlsx/dist/xlsx.full.min.js",
     "https://esm.run/xlsx",
     "https://esm.sh/xlsx"
   ];
-  for (const src of cdns) {
+  for (const src of cdnList) {
     try {
-      if (src.endsWith(".js")) {
-        await new Promise((res, rej) => {
-          const s = document.createElement('script');
-          s.src = src; s.async = true;
-          s.onload = () => res();
-          s.onerror = () => rej();
-          document.head.appendChild(s);
-        });
+      if (src.endsWith('.js')) {
+        await new Promise((res, rej)=>{ const s=document.createElement('script'); s.src=src; s.async=true; s.onload=()=>res(); s.onerror=()=>rej(); document.head.appendChild(s); });
       } else {
         const mod = await import(src);
         if (mod && (mod.read || mod.utils)) window.XLSX = mod;
       }
       if (window.XLSX) return;
-    } catch {}
+    } catch(e){}
   }
-  console.warn("Không tải được SheetJS từ CDN. Hãy đảm bảo có mạng.");
+  console.warn('Không tải được SheetJS từ CDN. Để chạy offline 100%, hãy dán xlsx.full.min.js vào placeholder SHEETJS_INLINE.');
 })();
-</script>
-</head>
-<body>
-<div class="wrap">
-  <h1>🔗 Trích xuất link shopee + Gộp excel theo lượt bán</h1>
 
-  <!-- ========== PHẦN 1: GIẢI MÃ LINK RÚT GỌN (UNIQUE, STREAMING) ========== -->
-  <section class="card">
-    <h2>1) Giải mã link rút gọn (chỉ hiển thị Link gốc, unique, hiện dần từng link)</h2>
-    <p class="note">Mỗi dòng 1 link rút gọn. Kết quả chỉ gồm <b>Link gốc (final)</b>, loại trùng theo cuối cùng.</p>
+/* ================== Helpers ================== */
+function tryParseURL(u){try{return new URL(u.trim())}catch{return null}}
+function normalizeURL(u, drop=true){ const url=tryParseURL(u); if(!url) return (u||'').trim(); if(drop){url.search=''; url.hash='';} url.hostname=url.hostname.toLowerCase(); return url.toString(); }
 
-    <div class="row">
-      <label class="pill"><input id="stripParams" type="checkbox" checked> Bỏ query/hash khi so trùng</label>
-      <span id="status" class="note"></span>
-    </div>
-
-    <textarea id="shortInput" placeholder="Dán danh sách link rút gọn (mỗi dòng 1 link)…"></textarea>
-
-    <div class="row">
-      <button id="btnStart">Bắt đầu giải mã</button>
-      <button id="btnStop" class="secondary" disabled>Dừng</button>
-      <button id="btnClear" class="secondary">Xóa</button>
-      <button id="btnCopy" class="secondary" disabled>Copy kết quả</button>
-    </div>
-
-    <textarea id="finalList" class="mono list" placeholder="Kết quả Link gốc (unique) sẽ hiển thị dần ở đây…" readonly></textarea>
-  </section>
-
-  <!-- ========== PHẦN 2: GỘP NHIỀU EXCEL → XUẤT 4 FILE THEO “LƯỢT BÁN” ========== -->
-  <section class="card">
-    <h2>2) Gộp nhiều Excel → Xuất 4 file theo nhóm “Lượt bán”</h2>
-    <p class="note">Tự nhận diện tiêu đề cột A kiểu: “Lượt bán &gt; X”, “Lượt bán X - Y”, “Lượt bán Y - Z”, “Lượt bán &lt; Z”. Liên kết nằm ở các dòng dưới mỗi tiêu đề.</p>
-    <div class="row">
-      <input type="file" id="excelFiles" accept=".xls,.xlsx,.csv" multiple>
-      <label class="pill"><input id="stripParams2" type="checkbox" checked> Chuẩn hoá URL khi trùng</label>
-    </div>
-    <div class="row">
-      <button id="btnProcess">Xử lý & Xuất 4 file</button>
-      <div id="fileList" class="note"></div>
-    </div>
-    <div id="mergeStatus" class="note"></div>
-    <div id="bucketCounts" class="counts"></div>
-  </section>
-</div>
-
-<script>
-/* ==================== PHẦN 1: GIẢI MÃ LINK RÚT GỌN ==================== */
-const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyRwKn62176OYnKm9nFyGHN1hal57Ud-7jfhNxtfVajYOCnHj07d2KvffmSRrRaDBThrg/exec";
-
-const $ = s => document.querySelector(s);
-const els = {
-  shortInput: $('#shortInput'),
-  stripParams: $('#stripParams'),
-  btnStart: $('#btnStart'),
-  btnStop: $('#btnStop'),
-  btnClear: $('#btnClear'),
-  btnCopy: $('#btnCopy'),
-  status: $('#status'),
-  finalList: $('#finalList'),
-};
-
-let stopFlag = false;
-const sleep = ms => new Promise(r=>setTimeout(r,ms));
-
-function normalizeURL(u, drop=true){
-  try{
-    const url = new URL((u||'').trim());
-    if (drop) { url.search = ''; url.hash=''; }
-    url.hostname = url.hostname.toLowerCase();
-    return url.toString();
-  }catch{return (u||'').trim();}
-}
-
-function lines(t){return (t||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean)}
-
-// chạy tuần tự: xong link nào hiện link đó
-els.btnStart.onclick = async () => {
-  const inputs = lines(els.shortInput.value);
-  if (!inputs.length) { els.status.textContent = 'Hãy dán danh sách link rút gọn.'; return; }
-
-  // reset
-  els.finalList.value = '';
-  els.status.textContent = `Đang xử lý 0/${inputs.length}…`;
-  els.btnStart.disabled = true; els.btnStop.disabled = false; els.btnCopy.disabled = true;
-  stopFlag = false;
-
-  const unique = new Set();  // lưu Link gốc (đã chuẩn hoá) để loại trùng
-  const drop = els.stripParams.checked;
-
-  let done = 0;
-  for (const u of inputs) {
-    if (stopFlag) break;
-
-    try {
-      // Simple request: KHÔNG set Content-Type để tránh preflight
-      const resp = await fetch(WEB_APP_URL, { method:'POST', body: JSON.stringify({ urls:[u] }) });
-      const text = await resp.text();
-      let data = null;
-      try { data = JSON.parse(text); } catch {}
-
-      const item = Array.isArray(data) ? data[0] : null;
-      const final = item && item.finalUrl ? item.finalUrl : '';
-
-      if (final) {
-        const norm = normalizeURL(final, drop);
-        if (!unique.has(norm)) {
-          unique.add(norm);
-          // hiển thị dần
-          els.finalList.value += (els.finalList.value ? '\n' : '') + norm;
-          els.finalList.scrollTop = els.finalList.scrollHeight;
-        }
-      }
-    } catch (e) {
-      // bỏ qua lỗi từng link
-    }
-
-    done++;
-    els.status.textContent = `Đang xử lý ${done}/${inputs.length}… Unique: ${unique.size}`;
-    await sleep(10); // nhường UI
-  }
-
-  els.status.textContent = `Hoàn tất ${done}/${inputs.length}. Unique: ${unique.size}`;
-  els.btnStart.disabled = false; els.btnStop.disabled = true;
-  els.btnCopy.disabled = unique.size === 0;
-};
-
-els.btnStop.onclick = () => { stopFlag = true; els.btnStop.disabled = true; };
-els.btnClear.onclick = () => {
-  els.shortInput.value = '';
-  els.finalList.value = '';
-  els.status.textContent = '';
-  els.btnCopy.disabled = true;
-};
-els.btnCopy.onclick = async () => {
-  try {
-    await navigator.clipboard.writeText(els.finalList.value || '');
-    els.status.textContent = '✅ Đã copy danh sách Link gốc.';
-  } catch {
-    els.status.textContent = '⚠️ Không copy được.';
-  }
-};
-
-/* ==================== PHẦN 2: GỘP EXCEL → 4 FILE ==================== */
-const excelInput = document.getElementById('excelFiles');
-const fileList   = document.getElementById('fileList');
-const btnProcess = document.getElementById('btnProcess');
-const stripParams2 = document.getElementById('stripParams2');
-const mergeStatus  = document.getElementById('mergeStatus');
-const bucketCounts = document.getElementById('bucketCounts');
-
-excelInput.onchange = () => {
-  fileList.textContent = [...excelInput.files].map(f=>f.name).join(', ');
-};
+const excelInput=document.getElementById('excelFiles');
+const fileList=document.getElementById('fileList');
+excelInput.onchange=()=>{ fileList.innerHTML=''; for(const f of excelInput.files){ const s=document.createElement('span'); s.className='pill'; s.textContent=f.name; fileList.appendChild(s); } };
 
 function detectHeaderKindAndNums(line){
   const s=line.replace(/\s+/g,' ').trim();
-  const nums=(s.match(/\d+(?:[.,]\d+)?/g)||[]).map(v=>parseFloat(v.replace(',','.')));
+  const nums=(s.match(/\d+(?:[\.,]\d+)?/g)||[]).map(v=>parseFloat(v.replace(',','.')));
   if(/lượt bán\s*>/i.test(s)) return {kind:'gt', nums};
   if(/lượt bán\s*</i.test(s)) return {kind:'lt', nums};
   if(/lượt bán/i.test(s) && /\d+\s*[-–]\s*\d+/.test(s)) return {kind:'range', nums};
@@ -217,34 +88,22 @@ function detectHeaderKindAndNums(line){
 }
 
 async function parseExcel(file){
-  if (!window.XLSX) throw new Error("SheetJS chưa sẵn sàng (hãy đảm bảo có mạng).");
+  if (!window.XLSX) throw new Error('SheetJS chưa sẵn sàng (hãy bật mạng hoặc dán inline).');
   const buf=await file.arrayBuffer();
   const wb=XLSX.read(buf,{type:'array'});
   const ws=wb.Sheets[wb.SheetNames[0]];
   const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:'',blankrows:false});
-
-  const lines=[]; // rải các dòng từ cột A (có thể ngắt dòng trong 1 ô)
-  for(const r of rows){
-    const a=(r&&r[0]!=null?String(r[0]):'').trim();
-    if(!a) continue;
-    const parts=a.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
-    for(const p of parts) lines.push(p);
-  }
+  const lines=[]; // flatten cột A + tách dòng
+  for(const r of rows){ const a=(r&&r[0]!=null?String(r[0]):'').trim(); if(!a) continue; const parts=a.split(/\r?\n/).map(x=>x.trim()).filter(Boolean); for(const p of parts) lines.push(p); }
 
   const buckets={gt:[], xy:[], yz:[], lt:[]};
   let state=null; let X=null,Y=null,Z=null; let rangeCount=0;
-
   for(const line of lines){
     const {kind, nums}=detectHeaderKindAndNums(line);
     if(kind){
       if(kind==='gt'){ state='gt'; if(nums.length) X=nums[0]; }
-      else if(kind==='range'){
-        state=(state==='gt'||rangeCount===0)?'xy':'yz'; rangeCount++;
-        if(nums.length>=2){
-          if(state==='xy'){ X = X ?? nums[0]; Y = nums[1]; }
-          else { Y = Y ?? nums[0]; Z = nums[1]; }
-        }
-      } else if(kind==='lt'){ state='lt'; if(nums.length) Z=nums[0]; }
+      else if(kind==='range'){ state=(state==='gt'||rangeCount===0)?'xy':'yz'; rangeCount++; if(nums.length>=2){ if(state==='xy'){ X = X ?? nums[0]; Y = nums[1]; } else { Y = Y ?? nums[0]; Z = nums[1]; } } }
+      else if(kind==='lt'){ state='lt'; if(nums.length) Z=nums[0]; }
       continue;
     }
     if(/^https?:\/\//i.test(line) && state){ buckets[state].push(line.trim()); }
@@ -254,55 +113,53 @@ async function parseExcel(file){
 
 function dedupeAndNormalize(buckets, dropParams){
   const out={gt:new Set(), xy:new Set(), yz:new Set(), lt:new Set()};
-  const norm = u => normalizeURL(u, dropParams);
-  for(const k of ['gt','xy','yz','lt']) for(const u of (buckets[k]||[])) out[k].add(norm(u));
+  for(const k of ['gt','xy','yz','lt']) for(const u of (buckets[k]||[])) out[k].add(normalizeURL(u, dropParams));
   return {gt:[...out.gt], xy:[...out.xy], yz:[...out.yz], lt:[...out.lt]};
 }
 
 async function saveXLSX(name, arr){
-  if (!window.XLSX) throw new Error("SheetJS chưa sẵn sàng (hãy đảm bảo có mạng).");
+  if (!window.XLSX) throw new Error('SheetJS chưa sẵn sàng (hãy bật mạng hoặc dán inline).');
   const ws=XLSX.utils.aoa_to_sheet(arr.map(x=>[x]));
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Links');
   XLSX.writeFile(wb,name,{compression:true});
 }
 
-btnProcess.onclick = async () => {
-  const files=[...excelInput.files];
-  if(!files.length){ mergeStatus.textContent='Hãy chọn ít nhất 1 file Excel.'; return; }
+const btnProcess=document.getElementById('btnProcess');
+const statusMerge=document.getElementById('mergeStatus');
+const bucketCounts=document.getElementById('bucketCounts');
 
-  btnProcess.disabled=true; mergeStatus.textContent='Đang đọc & gộp dữ liệu…';
-  bucketCounts.innerHTML='';
+btnProcess.onclick=async()=>{
+  const files=[...excelInput.files]; if(!files.length){statusMerge.textContent='Hãy chọn ít nhất 1 file Excel.';return}
+  statusMerge.textContent='Đang đọc & gộp dữ liệu…'; btnProcess.disabled=true; bucketCounts.innerHTML='';
 
   const merged={gt:[], xy:[], yz:[], lt:[]}; const thresholdsList=[];
   for(const f of files){
     try{
       const {buckets, thresholds}=await parseExcel(f);
-      merged.gt.push(...buckets.gt); merged.xy.push(...buckets.xy);
-      merged.yz.push(...buckets.yz); merged.lt.push(...buckets.lt);
+      merged.gt.push(...buckets.gt); merged.xy.push(...buckets.xy); merged.yz.push(...buckets.yz); merged.lt.push(...buckets.lt);
       thresholdsList.push(thresholds);
     }catch(e){ console.error('Lỗi file', f.name, e); }
   }
 
-  const deduped = dedupeAndNormalize(merged, stripParams2.checked);
+  const deduped=dedupeAndNormalize(merged, document.getElementById('stripParams2').checked);
 
-  // chọn ngưỡng đọc được đầu tiên đủ X,Y,Z, nếu không có → mặc định
-  let X=null,Y=null,Z=null;
-  for(const t of thresholdsList){ if(t && t.X!=null && t.Y!=null && t.Z!=null){ X=t.X; Y=t.Y; Z=t.Z; break; } }
-  if(X==null||Y==null||Z==null){ X=50; Y=10; Z=5; mergeStatus.innerHTML='Không đọc đủ ngưỡng từ tiêu đề — dùng mặc định X=50, Y=10, Z=5.'; }
+  // đặt tên: ưu tiên file nào đủ bộ X,Y,Z; nếu thiếu → 50/10/5
+  let X=null,Y=null,Z=null; for(const t of thresholdsList){ if(t && t.X!=null && t.Y!=null && t.Z!=null){ X=t.X; Y=t.Y; Z=t.Z; break; } }
+  if(X==null||Y==null||Z==null){ X=50; Y=10; Z=5; statusMerge.innerHTML='<span class="note">Không đọc đủ ngưỡng từ tiêu đề — dùng mặc định X=50, Y=10, Z=5.</span>'; }
 
   await saveXLSX(`Lượt bán Lớn hơn ${X}.xlsx`, deduped.gt);
   await saveXLSX(`Lượt bán từ ${X} đến ${Y}.xlsx`, deduped.xy);
   await saveXLSX(`Lượt bán từ ${Y} đến ${Z}.xlsx`, deduped.yz);
   await saveXLSX(`Lượt bán nhỏ hơn ${Z}.xlsx`, deduped.lt);
 
-  const mk=(label,n)=>{const s=document.createElement('span');s.textContent=`${label}: ${n}`;return s};
+  const mk=(label,n)=>{const s=document.createElement('span');s.className='pill';s.textContent=`${label}: ${n}`;return s};
   bucketCounts.append(mk(`> ${X}`, deduped.gt.length));
   bucketCounts.append(mk(`${X} – ${Y}`, deduped.xy.length));
   bucketCounts.append(mk(`${Y} – ${Z}`, deduped.yz.length));
   bucketCounts.append(mk(`< ${Z}`, deduped.lt.length));
 
-  mergeStatus.innerHTML += (mergeStatus.innerHTML?' ':'') + '✅ Đã xuất đủ 4 file.';
+  statusMerge.innerHTML += (statusMerge.innerHTML?' ':'') + '✅ Đã xuất đủ 4 file (mỗi dòng 1 link, không tiêu đề).';
   btnProcess.disabled=false;
 };
 </script>
