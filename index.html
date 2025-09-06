@@ -3,19 +3,22 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Gộp nhiều Excel → Xuất 4 file theo nhóm "Lượt bán"</title>
+  <title>Gộp Excel → Xuất N+1 file theo dãy “Lượt bán”</title>
   <style>
     :root{--bg:#0b1020;--card:#121830;--muted:#7c8db5;--txt:#e9eefb;--line:#1b2340}
     body{font:14px/1.5 system-ui,Roboto,Arial;background:var(--bg);color:var(--txt);margin:0}
     .wrap{max-width:1100px;margin:22px auto;padding:0 16px}
     h1{margin:0 0 8px}
     .card{background:#121830;border:1px solid var(--line);border-radius:12px;padding:16px;margin:16px 0}
-    input[type=file]{width:100%;margin:6px 0;padding:10px;border-radius:8px;border:1px solid #223;background:#0d1330;color:var(--txt)}
+    input[type=file], input[type=text]{width:100%;margin:6px 0;padding:10px;border-radius:8px;border:1px solid #223;background:#0d1330;color:var(--txt)}
     button{margin:6px 4px;padding:10px 14px;border-radius:8px;border:1px solid #235;background:#1b2550;color:#fff;cursor:pointer}
     button:disabled{opacity:.55;cursor:not-allowed}
     .pill{display:inline-block;margin:2px;padding:4px 10px;background:#0e1a42;border:1px solid #223;border-radius:999px;font-size:12px;color:#a8b4d6}
     .note{color:var(--muted);font-size:13px}
     #bucketCounts .pill{margin-right:6px}
+    .grid{display:grid;gap:10px}
+    .grid-2{grid-template-columns:1fr 1fr}
+    label.inline{display:inline-flex;align-items:center;gap:6px}
   </style>
 
   <!-- (Tuỳ chọn) DÁN NỘI DUNG xlsx.full.min.js vào đây để chạy OFFLINE 100% -->
@@ -28,23 +31,36 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>📊 Gộp nhiều Excel → Xuất 4 file theo nhóm “Lượt bán”</h1>
+  <h1>📊 Gộp Excel → Xuất nhóm theo dãy “Lượt bán” (linh hoạt)</h1>
 
   <section class="card">
-    <p class="note">Cấu trúc cột A: các tiêu đề theo thứ tự “Lượt bán &gt; X”, “Lượt bán X - Y”, “Lượt bán Y - Z”, “Lượt bán &lt; Z”; dưới mỗi tiêu đề là danh sách link (có thể có dòng trống). Công cụ tự nhận diện X, Y, Z.</p>
-    <div>
-      <input type="file" id="excelFiles" accept=".xls,.xlsx,.csv" multiple>
-      <label class="pill"><input id="stripParams2" type="checkbox" checked> Chuẩn hoá URL khi trùng (bỏ query/hash)</label>
+    <p class="note">
+      Cột A: có thể chứa tiêu đề kiểu <code>Lượt bán ≥ X</code>, <code>Lượt bán X - Y</code>, <code>Lượt bán ≥ X và &lt; Y</code>, <code>Lượt bán &lt; Z</code>…
+      Dưới mỗi tiêu đề là danh sách link (có thể có dòng trống). Công cụ tự nhận diện. Bạn có thể nhập dãy ngưỡng để tái-bucket linh hoạt.
+    </p>
+
+    <div class="grid grid-2">
+      <div>
+        <input type="file" id="excelFiles" accept=".xls,.xlsx,.csv" multiple>
+        <label class="inline"><input id="stripParams2" type="checkbox" checked> Chuẩn hoá URL khi trùng (bỏ query/hash)</label>
+        <div id="fileList"></div>
+      </div>
+
+      <div>
+        <label>Dãy ngưỡng (giảm dần, ví dụ):</label>
+        <input id="thresholdsInput" type="text" placeholder="1000,750,500,350,150,60,40,20,5,1" value="1000,750,500,350,150,60,40,20,5,1" />
+        <div class="note">Để <b>trống</b> nếu muốn tự suy ra ngưỡng từ tiêu đề trong file.</div>
+      </div>
     </div>
-    <button id="btnProcess">Xử lý & Xuất 4 file</button>
-    <div id="fileList"></div>
+
+    <button id="btnProcess">Xử lý & Xuất theo dãy</button>
     <div id="mergeStatus" class="note"></div>
     <div id="bucketCounts"></div>
   </section>
 </div>
 
 <script>
-/* ================== SheetJS bootstrap (inline hoặc CDN không cố định version) ================== */
+/* ================== SheetJS bootstrap (inline hoặc CDN) ================== */
 (async function bootstrapXLSX(){
   if (window.XLSX) return;
   const inline = document.getElementById('SHEETJS_INLINE')?.textContent || '';
@@ -73,19 +89,57 @@
 /* ================== Helpers ================== */
 function tryParseURL(u){try{return new URL(u.trim())}catch{return null}}
 function normalizeURL(u, drop=true){ const url=tryParseURL(u); if(!url) return (u||'').trim(); if(drop){url.search=''; url.hash='';} url.hostname=url.hostname.toLowerCase(); return url.toString(); }
+function num(s){ return s==null?NaN:parseFloat(String(s).replace(',', '.').replace(/\s+/g,'')); }
+function fmt(n){ if (!isFinite(n)) return (n>0?'+∞':'-∞'); return (Math.round(n)===n)? String(n): String(n).replace('.', ','); }
+function uniqSortedDesc(nums){ return [...new Set(nums.filter(x=>isFinite(x)))].sort((a,b)=>b-a); }
 
+/** Phân tích tiêu đề -> khoảng [low, up) theo chuẩn:
+ *  - "Lượt bán ≥ 1000" / "Lượt bán >= 1000" / "Lượt bán > 1000"
+ *  - "Lượt bán 1000 - 750" (sắp xếp giảm hoặc tăng đều nhận)
+ *  - "Lượt bán ≥ 750 và < 1000"
+ *  - "Lượt bán < 5"
+ */
+function parseHeaderToRange(line){
+  const s=(line||'').replace(/\s+/g,' ').trim();
+  if(!/lượt bán/i.test(s)) return null;
+
+  // ≥ X  | >= X | > X
+  let m = s.match(/lượt bán\s*(?:≥|>=|&ge;|&amp;ge;|>|&gt;)\s*([\d.,]+)/i);
+  if (m) { const x=num(m[1]); if(isFinite(x)) return { low:x, up:Infinity }; }
+
+  // < Z
+  m = s.match(/lượt bán\s*(?:<|&lt;)\s*([\d.,]+)/i);
+  if (m) { const z=num(m[1]); if(isFinite(z)) return { low:-Infinity, up:z }; }
+
+  // X - Y
+  m = s.match(/lượt bán\s*([\d.,]+)\s*[-–]\s*([\d.,]+)/i);
+  if (m) {
+    let a=num(m[1]), b=num(m[2]);
+    if(isFinite(a)&&isFinite(b)){ const low=Math.min(a,b), up=Math.max(a,b); return { low, up }; }
+  }
+
+  // ≥ A và < B
+  m = s.match(/lượt bán\s*(?:≥|>=|&ge;)\s*([\d.,]+)\s*(?:và)?\s*(?:<|&lt;)\s*([\d.,]+)/i);
+  if (m) {
+    const a=num(m[1]), b=num(m[2]);
+    if(isFinite(a)&&isFinite(b)){ const low=Math.min(a,b), up=Math.max(a,b); return { low, up }; }
+  }
+
+  return null;
+}
+
+function keyOfRange(r){ const l = isFinite(r.low)? r.low : (r.low===-Infinity?'NEG_INF':'UNK'); const u = isFinite(r.up)? r.up : (r.up===Infinity?'POS_INF':'UNK'); return `${l}|${u}`; }
+
+function rangesIntersect(a,b){
+  const lowA = isFinite(a.low)? a.low : -Infinity, upA = isFinite(a.up)? a.up : Infinity;
+  const lowB = isFinite(b.low)? b.low : -Infinity, upB = isFinite(b.up)? b.up : Infinity;
+  return lowA < upB && lowB < upA; // giao nhau kiểu [low, up)
+}
+
+/* ================== Đọc Excel ================== */
 const excelInput=document.getElementById('excelFiles');
 const fileList=document.getElementById('fileList');
 excelInput.onchange=()=>{ fileList.innerHTML=''; for(const f of excelInput.files){ const s=document.createElement('span'); s.className='pill'; s.textContent=f.name; fileList.appendChild(s); } };
-
-function detectHeaderKindAndNums(line){
-  const s=line.replace(/\s+/g,' ').trim();
-  const nums=(s.match(/\d+(?:[\.,]\d+)?/g)||[]).map(v=>parseFloat(v.replace(',','.')));
-  if(/lượt bán\s*>/i.test(s)) return {kind:'gt', nums};
-  if(/lượt bán\s*</i.test(s)) return {kind:'lt', nums};
-  if(/lượt bán/i.test(s) && /\d+\s*[-–]\s*\d+/.test(s)) return {kind:'range', nums};
-  return {kind:null, nums:[]};
-}
 
 async function parseExcel(file){
   if (!window.XLSX) throw new Error('SheetJS chưa sẵn sàng (hãy bật mạng hoặc dán inline).');
@@ -93,73 +147,186 @@ async function parseExcel(file){
   const wb=XLSX.read(buf,{type:'array'});
   const ws=wb.Sheets[wb.SheetNames[0]];
   const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:'',blankrows:false});
-  const lines=[]; // flatten cột A + tách dòng
-  for(const r of rows){ const a=(r&&r[0]!=null?String(r[0]):'').trim(); if(!a) continue; const parts=a.split(/\r?\n/).map(x=>x.trim()).filter(Boolean); for(const p of parts) lines.push(p); }
 
-  const buckets={gt:[], xy:[], yz:[], lt:[]};
-  let state=null; let X=null,Y=null,Z=null; let rangeCount=0;
-  for(const line of lines){
-    const {kind, nums}=detectHeaderKindAndNums(line);
-    if(kind){
-      if(kind==='gt'){ state='gt'; if(nums.length) X=nums[0]; }
-      else if(kind==='range'){ state=(state==='gt'||rangeCount===0)?'xy':'yz'; rangeCount++; if(nums.length>=2){ if(state==='xy'){ X = X ?? nums[0]; Y = nums[1]; } else { Y = Y ?? nums[0]; Z = nums[1]; } } }
-      else if(kind==='lt'){ state='lt'; if(nums.length) Z=nums[0]; }
+  // Gom toàn bộ text ở cột A (hỗ trợ nhiều dòng trong 1 ô)
+  const lines=[];
+  for(const r of rows){
+    const a=(r&&r[0]!=null?String(r[0]):'').trim();
+    if(!a) continue;
+    const parts=a.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+    for(const p of parts) lines.push(p);
+  }
+
+  // Buckets theo tiêu đề động (khoảng [low, up) làm khoá)
+  const bucketsMap = new Map(); // key: "low|up" -> {range, links:Set}
+  let currentRange = null;
+
+  for (const line of lines){
+    const range = parseHeaderToRange(line);
+    if (range){
+      currentRange = range;
+      const k = keyOfRange(range);
+      if (!bucketsMap.has(k)) bucketsMap.set(k, { range, links: new Set() });
       continue;
     }
-    if(/^https?:\/\//i.test(line) && state){ buckets[state].push(line.trim()); }
+    // nếu là link và đang ở trong 1 tiêu đề khoảng
+    if (currentRange && /^https?:\/\//i.test(line)) {
+      const k = keyOfRange(currentRange);
+      bucketsMap.get(k).links.add(line.trim());
+    }
   }
-  return {buckets, thresholds:{X,Y,Z}};
+
+  return bucketsMap; // Map<key, {range:{low,up}, links:Set<string>}>
 }
 
-function dedupeAndNormalize(buckets, dropParams){
-  const out={gt:new Set(), xy:new Set(), yz:new Set(), lt:new Set()};
-  for(const k of ['gt','xy','yz','lt']) for(const u of (buckets[k]||[])) out[k].add(normalizeURL(u, dropParams));
-  return {gt:[...out.gt], xy:[...out.xy], yz:[...out.yz], lt:[...out.lt]};
+/* ================== Gộp & tái-bucket theo dãy ================== */
+function dedupeAndNormalizeSets(map, dropParams){
+  // trả về Map cùng cấu trúc nhưng links đã được normalize
+  const out=new Map();
+  for (const [k, obj] of map.entries()){
+    const set=new Set();
+    for (const u of obj.links) set.add(normalizeURL(u, dropParams));
+    out.set(k, { range: obj.range, links: set });
+  }
+  return out;
 }
 
-async function saveXLSX(name, arr){
-  if (!window.XLSX) throw new Error('SheetJS chưa sẵn sàng (hãy bật mạng hoặc dán inline).');
-  const ws=XLSX.utils.aoa_to_sheet(arr.map(x=>[x]));
+function unifyBucketsAcrossFiles(listOfMaps){
+  // Hợp nhất các map theo cùng khoảng (low,up)
+  const merged = new Map();
+  for (const mp of listOfMaps){
+    for (const [k, obj] of mp.entries()){
+      if (!merged.has(k)) merged.set(k, { range: obj.range, links: new Set() });
+      const dest = merged.get(k);
+      for (const u of obj.links) dest.links.add(u);
+    }
+  }
+  return merged;
+}
+
+function buildOutputRangesFromThresholds(thrs){
+  // thrs: mảng giảm dần [t0, t1, ..., tn]
+  const out=[];
+  if (!thrs.length) return out;
+  let prev = Infinity;
+  for (const t of thrs){
+    out.push({ low:t, up:prev }); // [t, prev)
+    prev = t;
+  }
+  out.push({ low:-Infinity, up: thrs[thrs.length-1] }); // (-∞, last)
+  return out;
+}
+
+function labelOfRange(r){
+  const low=isFinite(r.low)? r.low : -Infinity;
+  const up =isFinite(r.up )? r.up  : Infinity;
+  if (up===Infinity) return `Lượt bán ≥ ${fmt(low)}`;
+  if (low===-Infinity) return `Lượt bán < ${fmt(up)}`;
+  return `Lượt bán từ ${fmt(low)} đến ${fmt(up)}`;
+}
+
+/* ================== Xuất Excel ================== */
+async function saveXLSX(name, links){
+  if (!window.XLSX) throw new Error('SheetJS chưa sẵn sàng.');
+  const ws=XLSX.utils.aoa_to_sheet(links.map(x=>[x]));
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Links');
   XLSX.writeFile(wb,name,{compression:true});
 }
 
+/* ================== Orchestrator ================== */
 const btnProcess=document.getElementById('btnProcess');
 const statusMerge=document.getElementById('mergeStatus');
 const bucketCounts=document.getElementById('bucketCounts');
+const thresholdsInput=document.getElementById('thresholdsInput');
 
 btnProcess.onclick=async()=>{
-  const files=[...excelInput.files]; if(!files.length){statusMerge.textContent='Hãy chọn ít nhất 1 file Excel.';return}
-  statusMerge.textContent='Đang đọc & gộp dữ liệu…'; btnProcess.disabled=true; bucketCounts.innerHTML='';
+  const files=[...excelInput.files];
+  if(!files.length){ statusMerge.textContent='Hãy chọn ít nhất 1 file Excel.'; return; }
 
-  const merged={gt:[], xy:[], yz:[], lt:[]}; const thresholdsList=[];
+  statusMerge.textContent='Đang đọc & gộp dữ liệu…';
+  btnProcess.disabled=true; bucketCounts.innerHTML='';
+
+  const parsedMaps=[];
   for(const f of files){
     try{
-      const {buckets, thresholds}=await parseExcel(f);
-      merged.gt.push(...buckets.gt); merged.xy.push(...buckets.xy); merged.yz.push(...buckets.yz); merged.lt.push(...buckets.lt);
-      thresholdsList.push(thresholds);
+      const mp = await parseExcel(f);
+      parsedMaps.push(mp);
     }catch(e){ console.error('Lỗi file', f.name, e); }
   }
 
-  const deduped=dedupeAndNormalize(merged, document.getElementById('stripParams2').checked);
+  // Hợp nhất & chuẩn hoá URL
+  const mergedRaw = unifyBucketsAcrossFiles(parsedMaps);
+  const merged = dedupeAndNormalizeSets(mergedRaw, document.getElementById('stripParams2').checked);
 
-  // đặt tên: ưu tiên file nào đủ bộ X,Y,Z; nếu thiếu → 50/10/5
-  let X=null,Y=null,Z=null; for(const t of thresholdsList){ if(t && t.X!=null && t.Y!=null && t.Z!=null){ X=t.X; Y=t.Y; Z=t.Z; break; } }
-  if(X==null||Y==null||Z==null){ X=50; Y=10; Z=5; statusMerge.innerHTML='<span class="note">Không đọc đủ ngưỡng từ tiêu đề — dùng mặc định X=50, Y=10, Z=5.</span>'; }
+  // Lấy dãy ngưỡng từ input (nếu có), ngược lại tự suy ra
+  let thrs = String(thresholdsInput.value||'').split(',')
+              .map(s=>num(s)).filter(x=>isFinite(x));
+  thrs = uniqSortedDesc(thrs);
 
-  await saveXLSX(`Lượt bán Lớn hơn ${X}.xlsx`, deduped.gt);
-  await saveXLSX(`Lượt bán từ ${X} đến ${Y}.xlsx`, deduped.xy);
-  await saveXLSX(`Lượt bán từ ${Y} đến ${Z}.xlsx`, deduped.yz);
-  await saveXLSX(`Lượt bán nhỏ hơn ${Z}.xlsx`, deduped.lt);
+  if (!thrs.length){
+    // Tự suy ra: lấy mọi mốc low (khác -∞) trong merged → giảm dần
+    const lows=[];
+    for (const {range} of merged.values()){
+      if (isFinite(range.low)) lows.push(range.low);
+    }
+    thrs = uniqSortedDesc(lows);
+    if (!thrs.length){
+      statusMerge.innerHTML = 'Không tìm thấy ngưỡng nào. Sẽ xuất 1 file “Không xác định”.';
+      // Xuất tất cả link vào 1 file
+      const allLinks = new Set();
+      for (const obj of merged.values()) for (const u of obj.links) allLinks.add(u);
+      await saveXLSX(`Khong xac dinh.xlsx`, [...allLinks]);
+      btnProcess.disabled=false; return;
+    } else {
+      statusMerge.innerHTML = `Tự suy ra dãy ngưỡng: ${thrs.join(', ')}`;
+    }
+  } else {
+    statusMerge.innerHTML = `Dùng dãy ngưỡng: ${thrs.join(', ')}`;
+  }
 
+  // Xây các khoảng đầu ra theo dãy
+  const outRanges = buildOutputRangesFromThresholds(thrs); // mảng {low,up}
+  // Map: label -> Set<link>
+  const outMap = new Map(outRanges.map(r=>[labelOfRange(r), new Set()]));
+
+  // Phân bổ: mỗi bucket đầu vào (rangeIn) được đưa vào mọi outRange giao nhau
+  let crossDupWarnings = 0;
+  for (const {range:rangeIn, links} of merged.values()){
+    let touched = 0;
+    for (const rOut of outRanges){
+      if (rangesIntersect(rangeIn, rOut)){
+        outMap.get(labelOfRange(rOut)).forEach(()=>{}); // warm
+        const dest = outMap.get(labelOfRange(rOut));
+        for (const u of links) dest.add(u);
+        touched++;
+      }
+    }
+    if (touched>1) crossDupWarnings++;
+  }
+
+  // Xuất file theo thứ tự từ bucket cao xuống thấp, bỏ bucket rỗng
+  let exported = 0;
+  for (const rOut of outRanges){
+    const label = labelOfRange(rOut);
+    const links = [...(outMap.get(label) || new Set())];
+    if (!links.length) continue;
+    await saveXLSX(`${label}.xlsx`, links);
+    exported++;
+  }
+
+  // Thống kê
   const mk=(label,n)=>{const s=document.createElement('span');s.className='pill';s.textContent=`${label}: ${n}`;return s};
-  bucketCounts.append(mk(`> ${X}`, deduped.gt.length));
-  bucketCounts.append(mk(`${X} – ${Y}`, deduped.xy.length));
-  bucketCounts.append(mk(`${Y} – ${Z}`, deduped.yz.length));
-  bucketCounts.append(mk(`< ${Z}`, deduped.lt.length));
+  for (const rOut of outRanges){
+    const label = labelOfRange(rOut);
+    const n = (outMap.get(label)||new Set()).size;
+    bucketCounts.append(mk(label, n));
+  }
 
-  statusMerge.innerHTML += (statusMerge.innerHTML?' ':'') + '✅ Đã xuất đủ 4 file (mỗi dòng 1 link, không tiêu đề).';
+  let note = `✅ Đã xuất ${exported} file (mỗi dòng 1 link).`;
+  if (crossDupWarnings>0) note += ` Lưu ý: Có ${crossDupWarnings} nhóm đầu vào giao nhiều khoảng → link có thể nằm ở >1 file (do không có “sold” tuyệt đối).`;
+  statusMerge.innerHTML += (statusMerge.innerHTML?' ':'') + note;
+
   btnProcess.disabled=false;
 };
 </script>
