@@ -35,8 +35,8 @@
 
   <section class="card">
     <p class="note">
-      Cột A: có thể chứa tiêu đề kiểu <code>Lượt bán ≥ X</code>, <code>Lượt bán X - Y</code>, <code>Lượt bán ≥ X và &lt; Y</code>, <code>Lượt bán &lt; Z</code>…
-      Dưới mỗi tiêu đề là danh sách link (có thể có dòng trống). Công cụ tự nhận diện. Bạn có thể nhập dãy ngưỡng để tái-bucket linh hoạt.
+      Cột A: chấp nhận tiêu đề <code>Lượt bán ≥ X</code>, <code>Lượt bán X - Y</code>, <code>Lượt bán ≥ X và &lt; Y</code>, <code>Lượt bán &lt; Z</code>… Dưới mỗi tiêu đề là list link.
+      Bạn có thể nhập dãy ngưỡng để tái-bucket linh hoạt (mặc định: 1000,750,500,350,150,60,40,20,5,1).
     </p>
 
     <div class="grid grid-2">
@@ -47,9 +47,9 @@
       </div>
 
       <div>
-        <label>Dãy ngưỡng (giảm dần, ví dụ):</label>
-        <input id="thresholdsInput" type="text" placeholder="1000,750,500,350,150,60,40,20,5,1" value="1000,750,500,350,150,60,40,20,5,1" />
-        <div class="note">Để <b>trống</b> nếu muốn tự suy ra ngưỡng từ tiêu đề trong file.</div>
+        <label>Dãy ngưỡng (giảm dần):</label>
+        <input id="thresholdsInput" type="text" value="1000,750,500,350,150,60,40,20,5,1" />
+        <div class="note">Để trống nếu muốn tự suy từ tiêu đề trong file.</div>
       </div>
     </div>
 
@@ -93,47 +93,47 @@ function num(s){ return s==null?NaN:parseFloat(String(s).replace(',', '.').repla
 function fmt(n){ if (!isFinite(n)) return (n>0?'+∞':'-∞'); return (Math.round(n)===n)? String(n): String(n).replace('.', ','); }
 function uniqSortedDesc(nums){ return [...new Set(nums.filter(x=>isFinite(x)))].sort((a,b)=>b-a); }
 
-/** Phân tích tiêu đề -> khoảng [low, up) theo chuẩn:
- *  - "Lượt bán ≥ 1000" / "Lượt bán >= 1000" / "Lượt bán > 1000"
- *  - "Lượt bán 1000 - 750" (sắp xếp giảm hoặc tăng đều nhận)
- *  - "Lượt bán ≥ 750 và < 1000"
- *  - "Lượt bán < 5"
- */
+/** ✅ SỬA LỖI: Ưu tiên mẫu 2 biên trước (≥ A và < B, hoặc A - B), rồi mới đến < Z và ≥ X */
 function parseHeaderToRange(line){
   const s=(line||'').replace(/\s+/g,' ').trim();
   if(!/lượt bán/i.test(s)) return null;
 
-  // ≥ X  | >= X | > X
-  let m = s.match(/lượt bán\s*(?:≥|>=|&ge;|&amp;ge;|>|&gt;)\s*([\d.,]+)/i);
-  if (m) { const x=num(m[1]); if(isFinite(x)) return { low:x, up:Infinity }; }
+  // 1) "≥ A và < B" (hỗ trợ ">=, ≥" và "<")
+  let m = s.match(/lượt bán\s*(?:≥|>=|&ge;|&amp;ge;)\s*([\d.,]+)\s*(?:và|and)?\s*(?:<|&lt;)\s*([\d.,]+)/i);
+  if (m) {
+    const a=num(m[1]), b=num(m[2]);
+    if(isFinite(a)&&isFinite(b)){ const low=Math.min(a,b), up=Math.max(a,b); return { low, up }; }
+  }
 
-  // < Z
-  m = s.match(/lượt bán\s*(?:<|&lt;)\s*([\d.,]+)/i);
-  if (m) { const z=num(m[1]); if(isFinite(z)) return { low:-Infinity, up:z }; }
-
-  // X - Y
+  // 2) "A - B"  (chấp nhận thứ tự bất kỳ)
   m = s.match(/lượt bán\s*([\d.,]+)\s*[-–]\s*([\d.,]+)/i);
   if (m) {
     let a=num(m[1]), b=num(m[2]);
     if(isFinite(a)&&isFinite(b)){ const low=Math.min(a,b), up=Math.max(a,b); return { low, up }; }
   }
 
-  // ≥ A và < B
-  m = s.match(/lượt bán\s*(?:≥|>=|&ge;)\s*([\d.,]+)\s*(?:và)?\s*(?:<|&lt;)\s*([\d.,]+)/i);
+  // 3) "< Z"
+  m = s.match(/lượt bán\s*(?:<|&lt;)\s*([\d.,]+)/i);
   if (m) {
-    const a=num(m[1]), b=num(m[2]);
-    if(isFinite(a)&&isFinite(b)){ const low=Math.min(a,b), up=Math.max(a,b); return { low, up }; }
+    const z=num(m[1]);
+    if(isFinite(z)) return { low:-Infinity, up:z };
+  }
+
+  // 4) "≥ X" / "> X"
+  m = s.match(/lượt bán\s*(?:≥|>=|&ge;|&amp;ge;|>|&gt;)\s*([\d.,]+)/i);
+  if (m) {
+    const x=num(m[1]);
+    if(isFinite(x)) return { low:x, up:Infinity };
   }
 
   return null;
 }
 
 function keyOfRange(r){ const l = isFinite(r.low)? r.low : (r.low===-Infinity?'NEG_INF':'UNK'); const u = isFinite(r.up)? r.up : (r.up===Infinity?'POS_INF':'UNK'); return `${l}|${u}`; }
-
 function rangesIntersect(a,b){
   const lowA = isFinite(a.low)? a.low : -Infinity, upA = isFinite(a.up)? a.up : Infinity;
   const lowB = isFinite(b.low)? b.low : -Infinity, upB = isFinite(b.up)? b.up : Infinity;
-  return lowA < upB && lowB < upA; // giao nhau kiểu [low, up)
+  return lowA < upB && lowB < upA; // [low, up) giao nhau
 }
 
 /* ================== Đọc Excel ================== */
@@ -148,7 +148,6 @@ async function parseExcel(file){
   const ws=wb.Sheets[wb.SheetNames[0]];
   const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:'',blankrows:false});
 
-  // Gom toàn bộ text ở cột A (hỗ trợ nhiều dòng trong 1 ô)
   const lines=[];
   for(const r of rows){
     const a=(r&&r[0]!=null?String(r[0]):'').trim();
@@ -157,8 +156,7 @@ async function parseExcel(file){
     for(const p of parts) lines.push(p);
   }
 
-  // Buckets theo tiêu đề động (khoảng [low, up) làm khoá)
-  const bucketsMap = new Map(); // key: "low|up" -> {range, links:Set}
+  const bucketsMap = new Map(); // key -> {range, links:Set}
   let currentRange = null;
 
   for (const line of lines){
@@ -169,19 +167,16 @@ async function parseExcel(file){
       if (!bucketsMap.has(k)) bucketsMap.set(k, { range, links: new Set() });
       continue;
     }
-    // nếu là link và đang ở trong 1 tiêu đề khoảng
     if (currentRange && /^https?:\/\//i.test(line)) {
       const k = keyOfRange(currentRange);
       bucketsMap.get(k).links.add(line.trim());
     }
   }
-
-  return bucketsMap; // Map<key, {range:{low,up}, links:Set<string>}>
+  return bucketsMap;
 }
 
 /* ================== Gộp & tái-bucket theo dãy ================== */
 function dedupeAndNormalizeSets(map, dropParams){
-  // trả về Map cùng cấu trúc nhưng links đã được normalize
   const out=new Map();
   for (const [k, obj] of map.entries()){
     const set=new Set();
@@ -190,9 +185,7 @@ function dedupeAndNormalizeSets(map, dropParams){
   }
   return out;
 }
-
 function unifyBucketsAcrossFiles(listOfMaps){
-  // Hợp nhất các map theo cùng khoảng (low,up)
   const merged = new Map();
   for (const mp of listOfMaps){
     for (const [k, obj] of mp.entries()){
@@ -203,9 +196,7 @@ function unifyBucketsAcrossFiles(listOfMaps){
   }
   return merged;
 }
-
 function buildOutputRangesFromThresholds(thrs){
-  // thrs: mảng giảm dần [t0, t1, ..., tn]
   const out=[];
   if (!thrs.length) return out;
   let prev = Infinity;
@@ -216,7 +207,6 @@ function buildOutputRangesFromThresholds(thrs){
   out.push({ low:-Infinity, up: thrs[thrs.length-1] }); // (-∞, last)
   return out;
 }
-
 function labelOfRange(r){
   const low=isFinite(r.low)? r.low : -Infinity;
   const up =isFinite(r.up )? r.up  : Infinity;
@@ -255,57 +245,51 @@ btnProcess.onclick=async()=>{
     }catch(e){ console.error('Lỗi file', f.name, e); }
   }
 
-  // Hợp nhất & chuẩn hoá URL
   const mergedRaw = unifyBucketsAcrossFiles(parsedMaps);
   const merged = dedupeAndNormalizeSets(mergedRaw, document.getElementById('stripParams2').checked);
 
-  // Lấy dãy ngưỡng từ input (nếu có), ngược lại tự suy ra
+  // Lấy dãy ngưỡng (nếu nhập) hoặc tự suy
   let thrs = String(thresholdsInput.value||'').split(',')
               .map(s=>num(s)).filter(x=>isFinite(x));
   thrs = uniqSortedDesc(thrs);
 
   if (!thrs.length){
-    // Tự suy ra: lấy mọi mốc low (khác -∞) trong merged → giảm dần
     const lows=[];
     for (const {range} of merged.values()){
       if (isFinite(range.low)) lows.push(range.low);
     }
     thrs = uniqSortedDesc(lows);
+    statusMerge.innerHTML = thrs.length
+      ? `Tự suy ra dãy ngưỡng: ${thrs.join(', ')}`
+      : 'Không tìm thấy ngưỡng nào. Sẽ xuất 1 file “Không xác định”.';
     if (!thrs.length){
-      statusMerge.innerHTML = 'Không tìm thấy ngưỡng nào. Sẽ xuất 1 file “Không xác định”.';
-      // Xuất tất cả link vào 1 file
       const allLinks = new Set();
       for (const obj of merged.values()) for (const u of obj.links) allLinks.add(u);
       await saveXLSX(`Khong xac dinh.xlsx`, [...allLinks]);
       btnProcess.disabled=false; return;
-    } else {
-      statusMerge.innerHTML = `Tự suy ra dãy ngưỡng: ${thrs.join(', ')}`;
     }
   } else {
     statusMerge.innerHTML = `Dùng dãy ngưỡng: ${thrs.join(', ')}`;
   }
 
-  // Xây các khoảng đầu ra theo dãy
-  const outRanges = buildOutputRangesFromThresholds(thrs); // mảng {low,up}
-  // Map: label -> Set<link>
+  const outRanges = buildOutputRangesFromThresholds(thrs);
   const outMap = new Map(outRanges.map(r=>[labelOfRange(r), new Set()]));
 
-  // Phân bổ: mỗi bucket đầu vào (rangeIn) được đưa vào mọi outRange giao nhau
+  // Phân bổ: với dữ liệu chuẩn (các khoảng rời nhau), mỗi nhóm input chỉ khớp đúng 1 outRange
   let crossDupWarnings = 0;
   for (const {range:rangeIn, links} of merged.values()){
     let touched = 0;
     for (const rOut of outRanges){
       if (rangesIntersect(rangeIn, rOut)){
-        outMap.get(labelOfRange(rOut)).forEach(()=>{}); // warm
         const dest = outMap.get(labelOfRange(rOut));
         for (const u of links) dest.add(u);
         touched++;
       }
     }
-    if (touched>1) crossDupWarnings++;
+    if (touched>1) crossDupWarnings++; // sẽ = 0 với file bạn gửi
   }
 
-  // Xuất file theo thứ tự từ bucket cao xuống thấp, bỏ bucket rỗng
+  // Xuất file theo thứ tự từ lớn xuống nhỏ; bỏ bucket rỗng
   let exported = 0;
   for (const rOut of outRanges){
     const label = labelOfRange(rOut);
@@ -324,7 +308,7 @@ btnProcess.onclick=async()=>{
   }
 
   let note = `✅ Đã xuất ${exported} file (mỗi dòng 1 link).`;
-  if (crossDupWarnings>0) note += ` Lưu ý: Có ${crossDupWarnings} nhóm đầu vào giao nhiều khoảng → link có thể nằm ở >1 file (do không có “sold” tuyệt đối).`;
+  if (crossDupWarnings>0) note += ` Lưu ý: Có ${crossDupWarnings} nhóm giao nhau (tiêu đề chồng lấn).`;
   statusMerge.innerHTML += (statusMerge.innerHTML?' ':'') + note;
 
   btnProcess.disabled=false;
