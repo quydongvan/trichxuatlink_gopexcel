@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Gộp Excel → Xuất N+1 file theo dãy “Lượt bán”</title>
+  <title>Gộp Excel → Xuất theo “Lượt bán” + lọc “Giá” (tải tuần tự)</title>
   <style>
     :root{--bg:#0b1020;--card:#121830;--muted:#7c8db5;--txt:#e9eefb;--line:#1b2340}
     body{font:14px/1.5 system-ui,Roboto,Arial;background:var(--bg);color:var(--txt);margin:0}
@@ -21,22 +21,17 @@
     label.inline{display:inline-flex;align-items:center;gap:6px}
   </style>
 
-  <!-- (Tuỳ chọn) DÁN NỘI DUNG xlsx.full.min.js vào đây để chạy OFFLINE 100% -->
-  <script id="SHEETJS_INLINE" type="text/plain">
-/* === SHEETJS_INLINE_START ===
-   DÁN TOÀN BỘ NỘI DUNG xlsx.full.min.js VÀO ĐÂY NẾU MUỐN "1 FILE HOÀN TOÀN" (OFFLINE).
-   Nếu để trống, loader bên dưới sẽ tự tải từ nhiều CDN (không cố định version).
-=== SHEETJS_INLINE_END === */
-  </script>
+  <!-- (Tuỳ chọn) DÁN xlsx.full.min.js vào đây để chạy OFFLINE -->
+  <script id="SHEETJS_INLINE" type="text/plain"></script>
 </head>
 <body>
 <div class="wrap">
-  <h1>📊 Gộp Excel → Xuất nhóm theo dãy “Lượt bán” (linh hoạt)</h1>
+  <h1>📊 Gộp Excel → Xuất theo “Lượt bán” + lọc “Giá” (tải tuần tự)</h1>
 
   <section class="card">
     <p class="note">
-      Cột A: chấp nhận tiêu đề <code>Lượt bán ≥ X</code>, <code>Lượt bán X - Y</code>, <code>Lượt bán ≥ X và &lt; Y</code>, <code>Lượt bán &lt; Z</code>… Dưới mỗi tiêu đề là list link.
-      Bạn có thể nhập dãy ngưỡng để tái-bucket linh hoạt (mặc định: 1000,750,500,350,150,60,40,20,5,1).
+      Cột A: tiêu đề <code>Lượt bán …</code> (≥, &lt;, A–B, ≥A và &lt;B). Dưới mỗi tiêu đề là list link. Bên trong có thể có tiêu đề con <code>Giá …</code> (≥, &lt;, A–B). Link không có tiêu đề Giá sẽ vào “Giá (không xác định)”.<br>
+      Dãy “Lượt bán” có thể nhập (mặc định: 1000,750,500,350,150,60,40,20,5,1). Dãy “Giá” dùng cố định theo yêu cầu.
     </p>
 
     <div class="grid grid-2">
@@ -47,20 +42,20 @@
       </div>
 
       <div>
-        <label>Dãy ngưỡng (giảm dần):</label>
+        <label>Dãy ngưỡng Lượt bán (giảm dần):</label>
         <input id="thresholdsInput" type="text" value="1000,750,500,350,150,60,40,20,5,1" />
         <div class="note">Để trống nếu muốn tự suy từ tiêu đề trong file.</div>
       </div>
     </div>
 
-    <button id="btnProcess">Xử lý & Xuất theo dãy</button>
+    <button id="btnProcess">Xử lý & Xuất</button>
     <div id="mergeStatus" class="note"></div>
     <div id="bucketCounts"></div>
   </section>
 </div>
 
 <script>
-/* ================== SheetJS bootstrap (inline hoặc CDN) ================== */
+/* ===== Load SheetJS (inline hoặc CDN) ===== */
 (async function bootstrapXLSX(){
   if (window.XLSX) return;
   const inline = document.getElementById('SHEETJS_INLINE')?.textContent || '';
@@ -83,57 +78,80 @@
       if (window.XLSX) return;
     } catch(e){}
   }
-  console.warn('Không tải được SheetJS từ CDN. Để chạy offline 100%, hãy dán xlsx.full.min.js vào placeholder SHEETJS_INLINE.');
+  console.warn('Không tải được SheetJS từ CDN. Hãy dán xlsx.full.min.js vào SHEETJS_INLINE để chạy offline.');
 })();
 
 /* ================== Helpers ================== */
+function numVN(s){ if (s==null) return NaN; const m=String(s).match(/-?\d+/g); if(!m) return NaN; const n=parseInt(m.join(''),10); return isFinite(n)?n:NaN; }
 function tryParseURL(u){try{return new URL(u.trim())}catch{return null}}
 function normalizeURL(u, drop=true){ const url=tryParseURL(u); if(!url) return (u||'').trim(); if(drop){url.search=''; url.hash='';} url.hostname=url.hostname.toLowerCase(); return url.toString(); }
-function num(s){ return s==null?NaN:parseFloat(String(s).replace(',', '.').replace(/\s+/g,'')); }
-function fmt(n){ if (!isFinite(n)) return (n>0?'+∞':'-∞'); return (Math.round(n)===n)? String(n): String(n).replace('.', ','); }
+function fmtIntVN(n){ if (!isFinite(n)) return (n>0?'+∞':'-∞'); return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g,'.'); }
 function uniqSortedDesc(nums){ return [...new Set(nums.filter(x=>isFinite(x)))].sort((a,b)=>b-a); }
 
-/** ✅ SỬA LỖI: Ưu tiên mẫu 2 biên trước (≥ A và < B, hoặc A - B), rồi mới đến < Z và ≥ X */
-function parseHeaderToRange(line){
+function keyOfRange(r){ const l=isFinite(r.low)?r.low:(r.low===-Infinity?'NEG_INF':'UNK'); const u=isFinite(r.up)?r.up:(r.up===Infinity?'POS_INF':'UNK'); return `${l}|${u}`; }
+function rangesIntersect(a,b){ const lowA=isFinite(a.low)?a.low:-Infinity, upA=isFinite(a.up)?a.up:Infinity; const lowB=isFinite(b.low)?b.low:-Infinity, upB=isFinite(b.up)?b.up:Infinity; return lowA<upB && lowB<upA; }
+
+// tên file ASCII an toàn + unique trong phiên
+function toAscii(str){ return str.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/Đ/g,'D'); }
+function safeFilenameBase(name){
+  const replaced = name
+    .replace(/≥|>=/g,' ge ')
+    .replace(/≤|<=/g,' le ')
+    .replace(/>/g,' gt ')
+    .replace(/</g,' lt ')
+    .replace(/[–—]/g,'-')
+    .replace(/\s+/g,' ')
+    .trim();
+  let ascii = toAscii(replaced).replace(/[^\w\s.-]/g,' ').replace(/\s+/g,'_');
+  if (!ascii.toLowerCase().endsWith('.xlsx')) ascii += '.xlsx';
+  ascii = ascii.replace(/[<>:"/\\|?*\u0000-\u001F]/g,'-');
+  return ascii;
+}
+function makeUniqueName(name, used){
+  let base = safeFilenameBase(name);
+  if (!used.has(base)){ used.add(base); return base; }
+  const m = base.match(/^(.*?)(?:\s\((\d+)\))?(\.xlsx)$/i);
+  const head = m ? m[1].trim() : base.replace(/\.xlsx$/i,'');
+  const ext = '.xlsx';
+  let i = 2, cand = `${head} (${i})${ext}`;
+  while (used.has(cand)) { i++; cand = `${head} (${i})${ext}`; }
+  used.add(cand);
+  return cand;
+}
+
+/** Parser tiêu đề số cho “Lượt bán …” / “Giá …” */
+function parseHeaderToRangeBase(line, keywordRegex){
   const s=(line||'').replace(/\s+/g,' ').trim();
-  if(!/lượt bán/i.test(s)) return null;
+  if(!keywordRegex.test(s)) return null;
 
-  // 1) "≥ A và < B" (hỗ trợ ">=, ≥" và "<")
-  let m = s.match(/lượt bán\s*(?:≥|>=|&ge;|&amp;ge;)\s*([\d.,]+)\s*(?:và|and)?\s*(?:<|&lt;)\s*([\d.,]+)/i);
-  if (m) {
-    const a=num(m[1]), b=num(m[2]);
-    if(isFinite(a)&&isFinite(b)){ const low=Math.min(a,b), up=Math.max(a,b); return { low, up }; }
-  }
+  let m = s.match(/(?:≥|>=|&ge;|&amp;ge;)\s*([\d.,\s]+)\s*(?:và|and)?\s*(?:<|&lt;)\s*([\d.,\s]+)/i);
+  if (m){ const a=numVN(m[1]), b=numVN(m[2]); if(isFinite(a)&&isFinite(b)){ const low=Math.min(a,b), up=Math.max(a,b); return {low,up}; } }
 
-  // 2) "A - B"  (chấp nhận thứ tự bất kỳ)
-  m = s.match(/lượt bán\s*([\d.,]+)\s*[-–]\s*([\d.,]+)/i);
-  if (m) {
-    let a=num(m[1]), b=num(m[2]);
-    if(isFinite(a)&&isFinite(b)){ const low=Math.min(a,b), up=Math.max(a,b); return { low, up }; }
-  }
+  m = s.match(/([\d.,\s]+)\s*[-–]\s*([\d.,\s]+)/i);
+  if (m){ const a=numVN(m[1]), b=numVN(m[2]); if(isFinite(a)&&isFinite(b)){ const low=Math.min(a,b), up=Math.max(a,b); return {low,up}; } }
 
-  // 3) "< Z"
-  m = s.match(/lượt bán\s*(?:<|&lt;)\s*([\d.,]+)/i);
-  if (m) {
-    const z=num(m[1]);
-    if(isFinite(z)) return { low:-Infinity, up:z };
-  }
+  m = s.match(/(?:<|&lt;)\s*([\d.,\s]+)/i);
+  if (m){ const z=numVN(m[1]); if(isFinite(z)) return {low:-Infinity, up:z}; }
 
-  // 4) "≥ X" / "> X"
-  m = s.match(/lượt bán\s*(?:≥|>=|&ge;|&amp;ge;|>|&gt;)\s*([\d.,]+)/i);
-  if (m) {
-    const x=num(m[1]);
-    if(isFinite(x)) return { low:x, up:Infinity };
-  }
+  m = s.match(/(?:≥|>=|&ge;|&amp;ge;|>|&gt;)\s*([\d.,\s]+)/i);
+  if (m){ const x=numVN(m[1]); if(isFinite(x)) return {low:x, up:Infinity}; }
 
   return null;
 }
+function parseSalesHeader(line){ return parseHeaderToRangeBase(line, /lượt bán/i); }
+function parsePriceHeader(line){ return parseHeaderToRangeBase(line, /(^|\s)giá(\s|:)/i); }
 
-function keyOfRange(r){ const l = isFinite(r.low)? r.low : (r.low===-Infinity?'NEG_INF':'UNK'); const u = isFinite(r.up)? r.up : (r.up===Infinity?'POS_INF':'UNK'); return `${l}|${u}`; }
-function rangesIntersect(a,b){
-  const lowA = isFinite(a.low)? a.low : -Infinity, upA = isFinite(a.up)? a.up : Infinity;
-  const lowB = isFinite(b.low)? b.low : -Infinity, upB = isFinite(b.up)? b.up : Infinity;
-  return lowA < upB && lowB < upA; // [low, up) giao nhau
+function labelOfSalesRange(r){
+  const low=isFinite(r.low)?r.low:-Infinity, up=isFinite(r.up)?r.up:Infinity;
+  if (up===Infinity) return `Lượt bán ≥ ${fmtIntVN(low)}`;
+  if (low===-Infinity) return `Lượt bán < ${fmtIntVN(up)}`;
+  return `Lượt bán từ ${fmtIntVN(low)} đến ${fmtIntVN(up)}`;
+}
+function labelOfPriceRange(r){
+  const low=isFinite(r.low)?r.low:-Infinity, up=isFinite(r.up)?r.up:Infinity;
+  if (up===Infinity) return `Giá > ${fmtIntVN(low)}`;
+  if (low===-Infinity) return `Giá < ${fmtIntVN(up)}`;
+  return `Giá ${fmtIntVN(low)} – ${fmtIntVN(up)}`;
 }
 
 /* ================== Đọc Excel ================== */
@@ -141,8 +159,9 @@ const excelInput=document.getElementById('excelFiles');
 const fileList=document.getElementById('fileList');
 excelInput.onchange=()=>{ fileList.innerHTML=''; for(const f of excelInput.files){ const s=document.createElement('span'); s.className='pill'; s.textContent=f.name; fileList.appendChild(s); } };
 
+/** Map<salesKey, { range:Range, priceMap: Map<priceKey, { range:Range|null, links:Set }>, unknown:Set }> */
 async function parseExcel(file){
-  if (!window.XLSX) throw new Error('SheetJS chưa sẵn sàng (hãy bật mạng hoặc dán inline).');
+  if (!window.XLSX) throw new Error('SheetJS chưa sẵn sàng.');
   const buf=await file.arrayBuffer();
   const wb=XLSX.read(buf,{type:'array'});
   const ws=wb.Sheets[wb.SheetNames[0]];
@@ -156,72 +175,108 @@ async function parseExcel(file){
     for(const p of parts) lines.push(p);
   }
 
-  const bucketsMap = new Map(); // key -> {range, links:Set}
-  let currentRange = null;
+  const salesMap = new Map();
+  let currentSales = null;
+  let currentPrice = null;
 
-  for (const line of lines){
-    const range = parseHeaderToRange(line);
-    if (range){
-      currentRange = range;
-      const k = keyOfRange(range);
-      if (!bucketsMap.has(k)) bucketsMap.set(k, { range, links: new Set() });
-      continue;
-    }
-    if (currentRange && /^https?:\/\//i.test(line)) {
-      const k = keyOfRange(currentRange);
-      bucketsMap.get(k).links.add(line.trim());
+  function ensureSales(range){
+    const k = keyOfRange(range);
+    if (!salesMap.has(k)) salesMap.set(k, { range, priceMap: new Map(), unknown: new Set() });
+    return salesMap.get(k);
+  }
+  function ensurePrice(salesObj, priceRange){
+    const pkey = priceRange? keyOfRange(priceRange) : 'UNKNOWN';
+    if (priceRange){
+      if (!salesObj.priceMap.has(pkey)) salesObj.priceMap.set(pkey, { range: priceRange, links: new Set() });
+      return salesObj.priceMap.get(pkey);
+    } else {
+      return { range: null, links: salesObj.unknown };
     }
   }
-  return bucketsMap;
+
+  for (const line of lines){
+    const sRange = parseSalesHeader(line);
+    if (sRange){ currentSales = ensureSales(sRange); currentPrice = null; continue; }
+
+    const pRange = parsePriceHeader(line);
+    if (pRange){ if (!currentSales) continue; currentPrice = ensurePrice(currentSales, pRange); continue; }
+
+    if (currentSales && /^https?:\/\//i.test(line)) {
+      (currentPrice ? currentPrice.links : currentSales.unknown).add(line.trim());
+    }
+  }
+  return salesMap;
 }
 
-/* ================== Gộp & tái-bucket theo dãy ================== */
-function dedupeAndNormalizeSets(map, dropParams){
+/* ================== Gộp & tái-bucket ================== */
+const PRICE_DEFAULTS = [5000000,1000000,500000,200000,100000,50000,20000];
+
+function dedupeAndNormalizeNested(map, dropParams){
   const out=new Map();
-  for (const [k, obj] of map.entries()){
-    const set=new Set();
-    for (const u of obj.links) set.add(normalizeURL(u, dropParams));
-    out.set(k, { range: obj.range, links: set });
+  for (const [sk, sobj] of map.entries()){
+    const sobj2 = { range: sobj.range, priceMap: new Map(), unknown: new Set() };
+    for (const u of sobj.unknown) sobj2.unknown.add(normalizeURL(u, dropParams));
+    for (const [pk, pobj] of sobj.priceMap.entries()){
+      const set=new Set();
+      for (const u of pobj.links) set.add(normalizeURL(u, dropParams));
+      sobj2.priceMap.set(pk, { range: pobj.range, links: set });
+    }
+    out.set(sk, sobj2);
   }
   return out;
 }
-function unifyBucketsAcrossFiles(listOfMaps){
+function unifyAcrossFiles(listOfMaps){
   const merged = new Map();
   for (const mp of listOfMaps){
-    for (const [k, obj] of mp.entries()){
-      if (!merged.has(k)) merged.set(k, { range: obj.range, links: new Set() });
-      const dest = merged.get(k);
-      for (const u of obj.links) dest.links.add(u);
+    for (const [sk, sobj] of mp.entries()){
+      if (!merged.has(sk)) merged.set(sk, { range: sobj.range, priceMap: new Map(), unknown: new Set() });
+      const dest = merged.get(sk);
+      for (const u of sobj.unknown) dest.unknown.add(u);
+      for (const [pk, pobj] of sobj.priceMap.entries()){
+        if (!dest.priceMap.has(pk)) dest.priceMap.set(pk, { range: pobj.range, links: new Set() });
+        const d = dest.priceMap.get(pk);
+        for (const u of pobj.links) d.links.add(u);
+      }
     }
   }
   return merged;
 }
-function buildOutputRangesFromThresholds(thrs){
-  const out=[];
-  if (!thrs.length) return out;
-  let prev = Infinity;
-  for (const t of thrs){
-    out.push({ low:t, up:prev }); // [t, prev)
-    prev = t;
-  }
-  out.push({ low:-Infinity, up: thrs[thrs.length-1] }); // (-∞, last)
-  return out;
+function buildRangesFromThresholds(thrs){
+  const out=[]; if (!thrs.length) return out;
+  let prev = Infinity; for (const t of thrs){ out.push({ low:t, up:prev }); prev = t; }
+  out.push({ low:-Infinity, up: thrs[thrs.length-1] }); return out;
 }
-function labelOfRange(r){
-  const low=isFinite(r.low)? r.low : -Infinity;
-  const up =isFinite(r.up )? r.up  : Infinity;
-  if (up===Infinity) return `Lượt bán ≥ ${fmt(low)}`;
-  if (low===-Infinity) return `Lượt bán < ${fmt(up)}`;
-  return `Lượt bán từ ${fmt(low)} đến ${fmt(up)}`;
+function buildPriceRanges(){
+  const thrs = PRICE_DEFAULTS;
+  const out=[]; let prev = Infinity;
+  for (const t of thrs){ out.push({ low:t, up:prev }); prev = t; }
+  out.push({ low:-Infinity, up: thrs[thrs.length-1] }); return out;
 }
 
-/* ================== Xuất Excel ================== */
-async function saveXLSX(name, links){
-  if (!window.XLSX) throw new Error('SheetJS chưa sẵn sàng.');
-  const ws=XLSX.utils.aoa_to_sheet(links.map(x=>[x]));
+/* ================== Tạo XLSX (Blob) + tải tuần tự ================== */
+function makeXLSXBlob(rowsColA){
+  const ws=XLSX.utils.aoa_to_sheet(rowsColA.map(x=>[x]));
   const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb,ws,'Links');
-  XLSX.writeFile(wb,name,{compression:true});
+  XLSX.utils.book_append_sheet(wb,ws,'Data');
+  const wbout = XLSX.write(wb,{bookType:'xlsx',type:'array'});
+  return new Blob([wbout],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+function triggerDownload(blob, filename){
+  return new Promise(resolve=>{
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url; a.download=filename; document.body.appendChild(a);
+    a.click();
+    // give the browser a tick to start the download before revoking
+    setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); resolve(); }, 100);
+  });
+}
+const sleep = ms => new Promise(r=>setTimeout(r, ms));
+async function downloadBlobSequential(files){ // files: [{blob, name}]
+  for (const f of files){
+    await triggerDownload(f.blob, f.name);
+    await sleep(350); // 👈 khoảng nghỉ giữa các lần tải
+  }
 }
 
 /* ================== Orchestrator ================== */
@@ -239,78 +294,101 @@ btnProcess.onclick=async()=>{
 
   const parsedMaps=[];
   for(const f of files){
-    try{
-      const mp = await parseExcel(f);
-      parsedMaps.push(mp);
-    }catch(e){ console.error('Lỗi file', f.name, e); }
+    try{ parsedMaps.push(await parseExcel(f)); }catch(e){ console.error('Lỗi file', f.name, e); }
   }
 
-  const mergedRaw = unifyBucketsAcrossFiles(parsedMaps);
-  const merged = dedupeAndNormalizeSets(mergedRaw, document.getElementById('stripParams2').checked);
+  const mergedRaw = unifyAcrossFiles(parsedMaps);
+  const merged = dedupeAndNormalizeNested(mergedRaw, document.getElementById('stripParams2').checked);
 
-  // Lấy dãy ngưỡng (nếu nhập) hoặc tự suy
-  let thrs = String(thresholdsInput.value||'').split(',')
-              .map(s=>num(s)).filter(x=>isFinite(x));
+  // Dãy ngưỡng Lượt bán
+  let thrs = String(thresholdsInput.value||'').split(',').map(s=>numVN(s)).filter(x=>isFinite(x));
   thrs = uniqSortedDesc(thrs);
 
   if (!thrs.length){
-    const lows=[];
-    for (const {range} of merged.values()){
-      if (isFinite(range.low)) lows.push(range.low);
-    }
+    const lows=[]; for (const {range} of merged.values()) if (isFinite(range.low)) lows.push(range.low);
     thrs = uniqSortedDesc(lows);
-    statusMerge.innerHTML = thrs.length
-      ? `Tự suy ra dãy ngưỡng: ${thrs.join(', ')}`
-      : 'Không tìm thấy ngưỡng nào. Sẽ xuất 1 file “Không xác định”.';
+    statusMerge.innerHTML = thrs.length ? `Tự suy ra dãy ngưỡng Lượt bán: ${thrs.join(', ')}` : 'Không tìm thấy ngưỡng Lượt bán nào. Sẽ xuất 1 file “Không xác định”.';
     if (!thrs.length){
       const allLinks = new Set();
-      for (const obj of merged.values()) for (const u of obj.links) allLinks.add(u);
-      await saveXLSX(`Khong xac dinh.xlsx`, [...allLinks]);
+      for (const sobj of merged.values()){
+        for (const u of sobj.unknown) allLinks.add(u);
+        for (const pobj of sobj.priceMap.values()) for (const u of pobj.links) allLinks.add(u);
+      }
+      const rows = [];
+      for (const pr of buildPriceRanges()) rows.push(labelOfPriceRange(pr));
+      if (allLinks.size){ rows.push('Giá (không xác định)'); for (const u of allLinks) rows.push(u); }
+      const filesToDl = [{ blob: makeXLSXBlob(rows), name: makeUniqueName('Khong_xac_dinh.xlsx', new Set()) }];
+      await downloadBlobSequential(filesToDl);
       btnProcess.disabled=false; return;
     }
   } else {
-    statusMerge.innerHTML = `Dùng dãy ngưỡng: ${thrs.join(', ')}`;
+    statusMerge.innerHTML = `Dùng dãy ngưỡng Lượt bán: ${thrs.join(', ')}`;
   }
 
-  const outRanges = buildOutputRangesFromThresholds(thrs);
-  const outMap = new Map(outRanges.map(r=>[labelOfRange(r), new Set()]));
+  const outSalesRanges = buildRangesFromThresholds(thrs);
+  const outPriceRanges = buildPriceRanges();
 
-  // Phân bổ: với dữ liệu chuẩn (các khoảng rời nhau), mỗi nhóm input chỉ khớp đúng 1 outRange
-  let crossDupWarnings = 0;
-  for (const {range:rangeIn, links} of merged.values()){
-    let touched = 0;
-    for (const rOut of outRanges){
-      if (rangesIntersect(rangeIn, rOut)){
-        const dest = outMap.get(labelOfRange(rOut));
-        for (const u of links) dest.add(u);
-        touched++;
+  // Chuẩn bị cấu trúc đích
+  const outMap = new Map(outSalesRanges.map(sr=>[labelOfSalesRange(sr), {
+    prices: new Map(outPriceRanges.map(pr=>[labelOfPriceRange(pr), new Set()])),
+    unknown: new Set()
+  }]));
+
+  // Phân bổ
+  for (const sobj of merged.values()){
+    for (const srOut of outSalesRanges){
+      if (!rangesIntersect(sobj.range, srOut)) continue;
+      const destSales = outMap.get(labelOfSalesRange(srOut));
+      for (const u of sobj.unknown) destSales.unknown.add(u);
+      for (const pobj of sobj.priceMap.values()){
+        let matched = false;
+        for (const prOut of outPriceRanges){
+          if (rangesIntersect(pobj.range, prOut)){
+            const bucket = destSales.prices.get(labelOfPriceRange(prOut));
+            for (const u of pobj.links) bucket.add(u);
+            matched = true; break;
+          }
+        }
+        if (!matched){ for (const u of pobj.links) destSales.unknown.add(u); }
       }
     }
-    if (touched>1) crossDupWarnings++; // sẽ = 0 với file bạn gửi
   }
 
-  // Xuất file theo thứ tự từ lớn xuống nhỏ; bỏ bucket rỗng
-  let exported = 0;
-  for (const rOut of outRanges){
-    const label = labelOfRange(rOut);
-    const links = [...(outMap.get(label) || new Set())];
-    if (!links.length) continue;
-    await saveXLSX(`${label}.xlsx`, links);
-    exported++;
-  }
-
-  // Thống kê
+  // Chuẩn bị danh sách file và tải tuần tự
+  const usedNames = new Set();
+  const filesToDownload = [];
+  bucketCounts.innerHTML = '';
   const mk=(label,n)=>{const s=document.createElement('span');s.className='pill';s.textContent=`${label}: ${n}`;return s};
-  for (const rOut of outRanges){
-    const label = labelOfRange(rOut);
-    const n = (outMap.get(label)||new Set()).size;
-    bucketCounts.append(mk(label, n));
+
+  for (const srOut of outSalesRanges){
+    const sLabel = labelOfSalesRange(srOut);
+    const dest = outMap.get(sLabel);
+
+    const total = new Set();
+    for (const set of dest.prices.values()) for (const u of set) total.add(u);
+    for (const u of dest.unknown) total.add(u);
+
+    const rows = [];
+    for (const prOut of outPriceRanges){
+      const pLabel = labelOfPriceRange(prOut);
+      rows.push(pLabel);
+      const links = [...(dest.prices.get(pLabel)||new Set())];
+      for (const u of links) rows.push(u);
+    }
+    if (dest.unknown.size){
+      rows.push('Giá (không xác định)');
+      for (const u of dest.unknown) rows.push(u);
+    }
+
+    const blob = makeXLSXBlob(rows);
+    const fname = makeUniqueName(`${sLabel}.xlsx`, usedNames);
+    filesToDownload.push({ blob, name: fname });
+
+    bucketCounts.append(mk(sLabel, total.size));
   }
 
-  let note = `✅ Đã xuất ${exported} file (mỗi dòng 1 link).`;
-  if (crossDupWarnings>0) note += ` Lưu ý: Có ${crossDupWarnings} nhóm giao nhau (tiêu đề chồng lấn).`;
-  statusMerge.innerHTML += (statusMerge.innerHTML?' ':'') + note;
-
+  await downloadBlobSequential(filesToDownload);
+  statusMerge.innerHTML += ' ✅ Đã tải tuần tự đầy đủ các file (bao gồm bucket < 1).';
   btnProcess.disabled=false;
 };
 </script>
